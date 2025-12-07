@@ -102,7 +102,7 @@ foreach ($period as $dt) {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-    <link rel="stylesheet" href="style_dashboard.css">
+    <link rel="stylesheet" href="style/style_dashboard.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -114,7 +114,7 @@ foreach ($period as $dt) {
                 <span class="logo-text">E-PARKING</span>
             </div>
             <nav class="navbar">
-                <a href="index.php">
+                <a href="masuk.php">
                     <i class="bi bi-car-front-fill"></i>
                     Kendaraan Masuk
                 </a>
