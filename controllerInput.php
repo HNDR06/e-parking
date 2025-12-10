@@ -201,34 +201,6 @@ if (basename($_SERVER['PHP_SELF']) == 'controllerInput.php') {
     exit;
 }
 
-function updateTicketImage($ticketId, $imagePath) {
-    global $conn;
-    
-    if (!$conn || $conn->connect_error) {
-        return false;
-    }
-    
-    try {
-        // Kita update berdasarkan barcode_id
-        $sql = "UPDATE parkir SET image_path = ? WHERE barcode_id = ?";
-        $stmt = $conn->prepare($sql);
-        $stmt->bind_param("ss", $imagePath, $ticketId);
-        
-        $result = $stmt->execute();
-        
-        if ($result) {
-            error_log("📷 Image path updated for: " . $ticketId);
-            return true;
-        } else {
-            error_log("❌ Failed to update image path: " . $stmt->error);
-            return false;
-        }
-    } catch(Exception $e) {
-        error_log("Database Error: " . $e->getMessage());
-        return false;
-    }
-}
-
 // Update bagian API handling di paling bawah
 if (basename($_SERVER['PHP_SELF']) == 'controllerInput.php') {
     header('Content-Type: application/json');
@@ -253,5 +225,25 @@ if (basename($_SERVER['PHP_SELF']) == 'controllerInput.php') {
         echo json_encode(['error' => 'No action specified']);
     }
     exit;
+}
+
+// Function to update ticket image
+function updateTicketImage($ticketId, $imagePath) {
+    global $conn; // atau sesuaikan dengan DB connection Anda
+    
+    try {
+        $stmt = $conn->prepare("UPDATE parkir SET image_path = ? WHERE barcode_id = ?");
+        $stmt->bind_param("ss", $imagePath, $ticketId);
+        $result = $stmt->execute();
+        $stmt->close();
+        
+        return [
+            'success' => $result,
+            'message' => $result ? 'Image updated' : 'Failed to update'
+        ];
+    } catch (Exception $e) {
+        error_log("Update image error: " . $e->getMessage());
+        return ['success' => false, 'message' => $e->getMessage()];
+    }
 }
 ?>

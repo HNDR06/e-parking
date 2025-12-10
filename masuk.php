@@ -27,6 +27,55 @@ function generateVehicleType() {
     return $types[array_rand($types)];
 }
 
+// Handle image upload via AJAX
+if (isset($_POST['upload_image']) && isset($_POST['ticket_id'])) {
+    $ticketId = $_POST['ticket_id'];
+    $imageData = $_POST['image_data'];
+    
+    // Remove data:image/png;base64, prefix
+    $imageData = str_replace('data:image/png;base64,', '', $imageData);
+    $imageData = str_replace(' ', '+', $imageData);
+    $imageData = base64_decode($imageData);
+    
+    // Create uploads directory if not exists
+    $uploadDir = 'uploads/';
+    if (!file_exists($uploadDir)) {
+        mkdir($uploadDir, 0777, true);
+    }
+    
+    // Generate unique filename
+    $filename = $ticketId . '_' . time() . '.png';
+    $filepath = $uploadDir . $filename;
+    
+    // Save image
+    if (file_put_contents($filepath, $imageData)) {
+        // Update ticket data in session with image path
+        if (isset($_SESSION['tickets'][$ticketId])) {
+            $_SESSION['tickets'][$ticketId]['vehicleImage'] = $filepath;
+            
+            // Update in database
+            updateTicketImage($ticketId, $filepath);
+            
+            echo json_encode([
+                'success' => true,
+                'message' => 'Image saved successfully',
+                'filepath' => $filepath
+            ]);
+        } else {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Ticket not found in session'
+            ]);
+        }
+    } else {
+        echo json_encode([
+            'success' => false,
+            'message' => 'Failed to save image'
+        ]);
+    }
+    exit;
+}
+
 // Check if this is a print request
 if (isset($_GET['print']) && isset($_GET['ticket'])) {
     $ticketId = $_GET['ticket'];
@@ -196,7 +245,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['generate'])) {
         'entryTime' => $entryTime,
         'entryTimeDisplay' => $entryTimeDisplay,
         'status' => 'active',
-        'source' => 'manual' // Mark as manual generation
+        'source' => 'manual',
+        'vehicleImage' => null // Will be updated after capture
     ];
     
     // Save to database using controller
@@ -214,6 +264,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['generate'])) {
     $_SESSION['tickets'][$ticketId] = $ticketData;
     $_SESSION['last_ticket'] = $ticketId;
     $_SESSION['show_gate'] = true;
+    $_SESSION['show_camera'] = true; // Flag to show camera
 }
 
 // Handle RFID from MQTT (via GET parameter)
@@ -234,7 +285,8 @@ if (isset($_GET['rfid'])) {
         'entryTimeDisplay' => $entryTimeDisplay,
         'status' => 'active',
         'source' => 'rfid',
-        'rfidData' => $rfidData
+        'rfidData' => $rfidData,
+        'vehicleImage' => null
     ];
     
     // Save to database using controller
@@ -252,6 +304,7 @@ if (isset($_GET['rfid'])) {
     $_SESSION['tickets'][$ticketId] = $ticketData;
     $_SESSION['last_ticket'] = $ticketId;
     $_SESSION['show_gate'] = true;
+    $_SESSION['show_camera'] = true; // Flag to show camera
     
     // Save device status to maintain connection state
     if (isset($_GET['device_status'])) {
@@ -259,16 +312,24 @@ if (isset($_GET['rfid'])) {
     }
 }
 
+// Handle skip camera
+if (isset($_GET['skip_camera'])) {
+    unset($_SESSION['show_camera']);
+    header('Location: ' . $_SERVER['PHP_SELF']);
+    exit;
+}
+
 // Handle reset
 if (isset($_GET['reset'])) {
     unset($_SESSION['show_gate']);
     unset($_SESSION['last_ticket']);
-    // Don't clear device_status on reset - keep the connection state
+    unset($_SESSION['show_camera']);
     header('Location: ' . $_SERVER['PHP_SELF']);
     exit;
 }
 
 $showGate = $_SESSION['show_gate'] ?? false;
+$showCamera = $_SESSION['show_camera'] ?? false;
 $lastTicketId = $_SESSION['last_ticket'] ?? null;
 $savedDeviceStatus = $_SESSION['device_status'] ?? null;
 ?>
@@ -359,11 +420,6 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             margin-bottom: 10px;
         }
 
-        .info-box ul {
-            color: #666;
-            margin: 10px 0 0 20px;
-        }
-
         .btn {
             width: 100%;
             padding: 15px;
@@ -385,8 +441,88 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             transform: translateY(-2px);
         }
 
-        .btn-primary:active {
-            transform: translateY(0);
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #218838;
+        }
+
+        /* Camera Capture Styles */
+        .camera-container {
+            background: white;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .camera-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .camera-header h2 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .camera-header p {
+            color: #666;
+        }
+
+        #camera-preview {
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+            border-radius: 10px;
+            background: #000;
+            margin: 0 auto;
+            display: block;
+        }
+
+        #captured-image {
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+            border-radius: 10px;
+            margin: 0 auto;
+            display: none;
+        }
+
+        .camera-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .camera-status {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+            color: #856404;
+            font-weight: 600;
+        }
+
+        .camera-status.success {
+            background: #d4edda;
+            border-color: #28a745;
+            color: #155724;
         }
 
         /* Gate Message Styles */
@@ -433,16 +569,7 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             margin-top: 20px;
         }
 
-        .btn-secondary {
-            background: #6c757d;
-            color: white;
-        }
-
-        .btn-secondary:hover {
-            background: #5a6268;
-        }
-
-        /* MQTT Status Indicator */
+        /* Status Indicators */
         .mqtt-status {
             position: fixed;
             top: 20px;
@@ -484,7 +611,6 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             font-weight: 600;
         }
 
-        /* Device Status Indicator */
         .device-status {
             position: fixed;
             top: 80px;
@@ -570,6 +696,298 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
                     </button>
                 </form>
             </div>
+        <?php elseif ($showCamera && $lastTicketId): ?>
+            <!-- Camera Capture -->
+            <div class="camera-container">
+                <div class="camera-header">
+                    <h2>📸 Capture Vehicle Photo</h2>
+                    <p>Take a photo of the vehicle for record</p>
+                </div>
+
+                <div class="camera-status" id="cameraStatus">
+                    Initializing camera...
+                </div>
+
+                <video id="camera-preview" autoplay playsinline></video>
+                <canvas id="canvas" style="display: none;"></canvas>
+                <img id="captured-image" alt="Captured Vehicle">
+            </div>
+
+            <script>
+                            // Auto Capture Configuration
+                const AUTO_CAPTURE_DELAY = 1000; // 1 detik setelah kamera ready
+                let stream = null;
+                let capturedImageData = null;
+                let autoCaptureTimer = null;
+                const ticketId = '<?php echo $lastTicketId; ?>';
+
+                // Initialize camera dengan auto-capture
+                async function initCamera() {
+                    const statusEl = document.getElementById('cameraStatus');
+                    const video = document.getElementById('camera-preview');
+                    
+                    try {
+                        statusEl.textContent = 'Requesting camera access...';
+                        
+                        stream = await navigator.mediaDevices.getUserMedia({ 
+                            video: { 
+                                facingMode: 'environment',
+                                width: { ideal: 1280 },
+                                height: { ideal: 720 }
+                            } 
+                        });
+                        
+                        console.log('✅ Camera stream obtained');
+                        video.srcObject = stream;
+                        
+                        // Hide manual controls
+                        const manualControls = document.querySelector('.camera-controls');
+                        if (manualControls) {
+                            manualControls.style.display = 'none';
+                        }
+                        
+                        // Wait for video to actually be ready and playing
+                        await waitForVideoReady(video);
+                        
+                        // Update status
+                        statusEl.textContent = 'Camera ready! Auto-capturing Wait...';
+                        statusEl.style.background = '#d4edda';
+                        statusEl.style.borderColor = '#28a745';
+                        statusEl.style.color = '#155724';
+                        
+                        // Start countdown
+                        startAutoCaptureCountdown();
+                        
+                    } catch (error) {
+                        console.error('❌ Camera error:', error);
+                        statusEl.textContent = 'Camera access denied: ' + error.message;
+                        statusEl.style.background = '#f8d7da';
+                        statusEl.style.borderColor = '#dc3545';
+                        statusEl.style.color = '#721c24';
+                        
+                        // Auto skip if camera fails
+                        setTimeout(() => {
+                            window.location.href = '?skip_camera=1';
+                        }, 3000);
+                    }
+                }
+
+                // Wait for video to be fully ready
+                function waitForVideoReady(video) {
+                    return new Promise((resolve, reject) => {
+                        // Set timeout as fallback
+                        const timeout = setTimeout(() => {
+                            if (video.readyState >= 2) {
+                                console.log('✅ Video ready (timeout fallback)');
+                                resolve();
+                            } else {
+                                console.error('❌ Video failed to load');
+                                reject(new Error('Video load timeout'));
+                            }
+                        }, 5000);
+                        
+                        // Check if already ready
+                        if (video.readyState >= 2) {
+                            clearTimeout(timeout);
+                            console.log('✅ Video already ready');
+                            resolve();
+                            return;
+                        }
+                        
+                        // Wait for loadeddata event
+                        video.addEventListener('loadeddata', () => {
+                            clearTimeout(timeout);
+                            console.log('✅ Video loadeddata event fired');
+                            resolve();
+                        }, { once: true });
+                        
+                        // Also listen to canplay as backup
+                        video.addEventListener('canplay', () => {
+                            clearTimeout(timeout);
+                            console.log('✅ Video canplay event fired');
+                            resolve();
+                        }, { once: true });
+                    });
+                }
+
+                // Countdown before auto-capture
+                function startAutoCaptureCountdown() {
+                    let countdown = 1;
+                    const statusEl = document.getElementById('cameraStatus');
+                    
+                    const countdownInterval = setInterval(() => {
+                        if (countdown > 0) {
+                            statusEl.textContent = `📸 Auto-capturing`;
+                            countdown--;
+                        } else {
+                            clearInterval(countdownInterval);
+                            statusEl.textContent = '📷 Capturing photo...';
+                            
+                            // Small delay to ensure status is visible
+                            setTimeout(() => {
+                                autoCapturePhoto();
+                            }, 200);
+                        }
+                    }, 1000);
+                }
+
+                // Auto capture photo
+                function autoCapturePhoto() {
+                    const video = document.getElementById('camera-preview');
+                    const canvas = document.getElementById('canvas');
+                    const capturedImage = document.getElementById('captured-image');
+                    const statusEl = document.getElementById('cameraStatus');
+                    
+                    try {
+                        // Verify video is actually playing
+                        if (video.readyState < 2) {
+                            console.error('❌ Video not ready for capture');
+                            statusEl.textContent = '❌ Video not ready. Retrying...';
+                            
+                            // Retry after 1 second
+                            setTimeout(autoCapturePhoto, 1000);
+                            return;
+                        }
+                        
+                        // Set canvas size to match video
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        
+                        console.log(`📐 Canvas size: ${canvas.width}x${canvas.height}`);
+                        
+                        if (canvas.width === 0 || canvas.height === 0) {
+                            console.error('❌ Invalid canvas dimensions');
+                            statusEl.textContent = '❌ Invalid video dimensions. Retrying...';
+                            
+                            // Retry after 1 second
+                            setTimeout(autoCapturePhoto, 1000);
+                            return;
+                        }
+                        
+                        // Draw video frame to canvas
+                        const context = canvas.getContext('2d');
+                        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        
+                        // Convert to base64
+                        capturedImageData = canvas.toDataURL('image/png');
+                        
+                        console.log('✅ Photo captured, data length:', capturedImageData.length);
+                        
+                        // Show captured image
+                        capturedImage.src = capturedImageData;
+                        video.style.display = 'none';
+                        capturedImage.style.display = 'block';
+                        
+                        // Update status
+                        statusEl.textContent = '✅ Photo captured! Uploading...';
+                        statusEl.style.background = '#fff3cd';
+                        statusEl.style.borderColor = '#ffc107';
+                        statusEl.style.color = '#856404';
+                        
+                        // Auto upload immediately
+                        setTimeout(() => {
+                            autoUploadPhoto();
+                        }, 500);
+                        
+                    } catch (error) {
+                        console.error('❌ Capture error:', error);
+                        statusEl.textContent = '❌ Capture failed: ' + error.message;
+                        statusEl.style.background = '#f8d7da';
+                        statusEl.style.borderColor = '#dc3545';
+                        
+                        skipToNextStep();
+                    }
+                }
+
+                // Auto upload photo
+                async function autoUploadPhoto() {
+                    const statusEl = document.getElementById('cameraStatus');
+                    
+                    if (!capturedImageData) {
+                        console.error('❌ No image data to upload');
+                        statusEl.textContent = '❌ No image data. Redirecting...';
+                        skipToNextStep();
+                        return;
+                    }
+
+                    try {
+                        console.log('📤 Uploading image...');
+                        
+                        const formData = new FormData();
+                        formData.append('upload_image', '1');
+                        formData.append('ticket_id', ticketId);
+                        formData.append('image_data', capturedImageData);
+                        
+                        const response = await fetch('', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        const result = await response.json();
+                        console.log('📥 Upload response:', result);
+                        
+                        if (result.success) {
+                            statusEl.textContent = '✅ Photo saved successfully! Redirecting...';
+                            statusEl.style.background = '#d4edda';
+                            statusEl.style.borderColor = '#28a745';
+                            statusEl.style.color = '#155724';
+                            
+                            stopCamera();
+                            
+                            // Redirect after short delay
+                            setTimeout(() => {
+                                window.location.href = '?skip_camera=1';
+                            }, 1500);
+                        } else {
+                            console.error('❌ Upload failed:', result.message);
+                            statusEl.textContent = '❌ Upload failed: ' + result.message;
+                            statusEl.style.background = '#f8d7da';
+                            statusEl.style.borderColor = '#dc3545';
+                            
+                            skipToNextStep();
+                        }
+                    } catch (error) {
+                        console.error('❌ Upload error:', error);
+                        statusEl.textContent = '❌ Upload error: ' + error.message;
+                        statusEl.style.background = '#f8d7da';
+                        statusEl.style.borderColor = '#dc3545';
+                        
+                        skipToNextStep();
+                    }
+                }
+
+                // Skip to next step if upload fails
+                function skipToNextStep() {
+                    stopCamera();
+                    setTimeout(() => {
+                        window.location.href = '?skip_camera=1';
+                    }, 2000);
+                }
+
+                // Stop camera
+                function stopCamera() {
+                    if (stream) {
+                        stream.getTracks().forEach(track => {
+                            track.stop();
+                            console.log('🛑 Camera track stopped');
+                        });
+                    }
+                    if (autoCaptureTimer) {
+                        clearTimeout(autoCaptureTimer);
+                    }
+                }
+
+                // Initialize on load
+                window.addEventListener('DOMContentLoaded', function() {
+                    console.log('🚀 Initializing auto-capture camera...');
+                    initCamera();
+                });
+
+                // Cleanup on page unload
+                window.addEventListener('beforeunload', function() {
+                    stopCamera();
+                });
+            </script>
         <?php else: ?>
             <!-- Gate Open Message -->
             <div class="gate-container">
@@ -606,6 +1024,12 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
                         <span class="ticket-info-label">Waktu Masuk:</span>
                         <span class="ticket-info-value"><?php echo $currentTicket['entryTimeDisplay']; ?></span>
                     </div>
+                    <?php if (isset($currentTicket['vehicleImage']) && $currentTicket['vehicleImage']): ?>
+                    <div class="ticket-info-row">
+                        <span class="ticket-info-label">Foto Kendaraan:</span>
+                        <span class="ticket-info-value">✅ Tersimpan</span>
+                    </div>
+                    <?php endif; ?>
                 </div>
 
                 <p style="color: #666; margin-top: 20px; font-size: 14px; text-align: center;">
@@ -614,7 +1038,7 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
                     <?php else: ?>
                         Karcis dibuka di tab baru untuk dicetak.<br>
                     <?php endif; ?>
-                    Halaman ini akan otomatis reset dalam 5 detik...
+                    Halaman ini akan otomatis reset dalam 3 detik...
                 </p>
 
                 <div class="action-buttons">
@@ -651,7 +1075,7 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
                 // Auto redirect after 5 seconds
                 setTimeout(function() {
                     window.location.href = '?reset=1';
-                }, 5000);
+                }, 3000);
             </script>
         <?php endif; ?>
     </div>
@@ -659,7 +1083,7 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
     <script>
         // MQTT Configuration - HiveMQ Cloud
         const MQTT_BROKER = "868dc6a1dc894a84a5793a95746a9881.s1.eu.hivemq.cloud";
-        const MQTT_PORT = 8884; // WebSocket Secure Port untuk HiveMQ Cloud
+        const MQTT_PORT = 8884;
         const MQTT_USERNAME = "hivemq.webclient.1751385942895";
         const MQTT_PASSWORD = "R07c6iA#dG>W3lNj?sQ:";
         const MQTT_TOPIC_MODE = "KyoumaProject/mode";
@@ -675,7 +1099,7 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             onFailure: onFailure,
             userName: MQTT_USERNAME,
             password: MQTT_PASSWORD,
-            useSSL: true, // HiveMQ Cloud memerlukan SSL
+            useSSL: true,
             timeout: 10,
             keepAliveInterval: 30,
             cleanSession: true
@@ -706,27 +1130,22 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             const deviceIndicator = document.getElementById('deviceIndicator');
             const deviceText = document.getElementById('deviceText');
             
-            // Convert to lowercase untuk case-insensitive comparison
             const modeLower = mode.toLowerCase().trim();
             
             if (modeLower === "in") {
-                // Device Connected
                 deviceStatus.classList.add('device-connected');
                 deviceIndicator.classList.add('connected');
                 deviceText.textContent = "Device Connected";
                 console.log("✅ Device Status: CONNECTED (mode: " + mode + ")");
                 
-                // Save to localStorage
                 localStorage.setItem('device_mode', 'in');
                 localStorage.setItem('device_connected', 'true');
             } else {
-                // Device Not Connected
                 deviceStatus.classList.remove('device-connected');
                 deviceIndicator.classList.remove('connected');
                 deviceText.textContent = "Device Not Connected";
                 console.log("❌ Device Status: NOT CONNECTED (mode: " + mode + ")");
                 
-                // Save to localStorage
                 localStorage.setItem('device_mode', mode);
                 localStorage.setItem('device_connected', 'false');
             }
@@ -738,11 +1157,9 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             const savedMode = localStorage.getItem('device_mode');
             
             <?php if ($savedDeviceStatus): ?>
-                // Restore from PHP session if available
                 console.log("Restoring device status from session: <?php echo $savedDeviceStatus; ?>");
                 updateDeviceStatus("<?php echo $savedDeviceStatus; ?>");
             <?php else: ?>
-                // Restore from localStorage
                 if (savedConnected === 'true' && savedMode === 'in') {
                     console.log("Restoring device status from localStorage: CONNECTED");
                     updateDeviceStatus('in');
@@ -769,7 +1186,6 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             console.log("Connected to MQTT Broker");
             updateMQTTStatus('MQTT Connected', true, false);
             
-            // Subscribe to topics
             client.subscribe(MQTT_TOPIC_MODE, {qos: 1});
             console.log("Subscribed to topic: " + MQTT_TOPIC_MODE);
             
@@ -782,7 +1198,6 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             console.error("Connection Failed:", message.errorMessage);
             updateMQTTStatus('Connection Failed', false, false);
             
-            // Retry connection after 5 seconds
             setTimeout(connectMQTT, 5000);
         }
         
@@ -792,7 +1207,6 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
                 console.error("Connection Lost:", responseObject.errorMessage);
                 updateMQTTStatus('Connection Lost', false, false);
                 
-                // Retry connection
                 setTimeout(connectMQTT, 5000);
             }
         }
@@ -803,7 +1217,6 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
             console.log("Topic: " + message.destinationName);
             console.log("Payload: " + message.payloadString);
             
-            // Handle message based on topic
             const topic = message.destinationName;
             const payload = message.payloadString;
             
@@ -818,21 +1231,12 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
         function handleModeMessage(payload) {
             console.log("Mode message:", payload);
             
-            // Update device status berdasarkan mode
             updateDeviceStatus(payload);
-            
-            // Tampilkan notifikasi
             showNotification("Mode Update", payload);
             
-            // Logika tambahan berdasarkan mode (case-insensitive)
             const modeLower = payload.toLowerCase().trim();
             if (modeLower === "in") {
                 console.log("🚗 Mode: ENTRY - Device ready to generate ticket");
-                // Bisa otomatis trigger generate jika diperlukan
-                // const form = document.querySelector('form');
-                // if (form) {
-                //     form.submit();
-                // }
             } else {
                 console.log("🚫 Mode: " + payload + " - Device not in entry mode");
             }
@@ -842,56 +1246,29 @@ $savedDeviceStatus = $_SESSION['device_status'] ?? null;
         function handleRFIDMessage(payload) {
             console.log("RFID message:", payload);
             
-            // Tampilkan notifikasi
             showNotification("RFID Detected", payload);
             
-            // Cek apakah device dalam mode "In" (connected)
             const deviceText = document.getElementById('deviceText').textContent;
             
             if (deviceText === "Device Connected") {
                 console.log("✅ RFID Detected: " + payload + " - Opening gate...");
                 
-                // Get current device mode from localStorage
                 const currentMode = localStorage.getItem('device_mode') || 'in';
                 
-                // Redirect to page with RFID parameter and device status
                 window.location.href = '?rfid=' + encodeURIComponent(payload) + '&device_status=' + encodeURIComponent(currentMode);
             } else {
                 console.warn("⚠️ RFID detected but device not connected. Ignoring...");
             }
         }
-
-        // Show gate open overlay
-        function showGateOpen(rfidData, isManualGenerate = false) {
-            // Not used anymore - using PHP page instead
-        }
-
-        // Close gate overlay
-        function closeGate() {
-            // Not used anymore - using PHP page instead
-        }
-        
-        // Handle MQTT message based on payload (legacy function)
-        function handleMQTTMessage(payload) {
-            console.log("Handling message:", payload);
-            showNotification("MQTT Message", payload);
-        }
         
         // Show notification
         function showNotification(title, message) {
-            // Simple alert notification (bisa diganti dengan toast notification)
             console.log(`[${title}] ${message}`);
-            
-            // Optional: Tampilkan di UI
-            // alert(`${title}: ${message}`);
         }
         
         // Initialize MQTT connection on page load
         window.addEventListener('DOMContentLoaded', function() {
-            // Restore device status first
             restoreDeviceStatus();
-            
-            // Then connect to MQTT
             connectMQTT();
         });
     </script>
